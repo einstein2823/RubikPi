@@ -8,15 +8,28 @@
 import pyrealsense2 as rs
 import numpy as np
 import cv2
+from ultralytics import YOLO
+
 
 def change_thresh(i, isLow):
     if isLow:
+
         def do_input(x):
             low_thresh[i] = x
+
     else:
+
         def do_input(x):
             high_thresh[i] = x
+
     return do_input
+
+
+custom_hsv = np.zeros((1, 256, 3), dtype=np.uint8)
+for i in range(256):
+    custom_hsv[0, :, 0] = i
+    custom_hsv[0, :, 1] = i
+    custom_hsv[0, :, 2] = i
 
 # Configure depth and color streams
 pipeline = rs.pipeline()
@@ -35,7 +48,7 @@ depth_scale = device.first_depth_sensor().get_depth_scale()
 
 found_rgb = False
 for s in device.sensors:
-    if s.get_info(rs.camera_info.name) == 'RGB Camera':
+    if s.get_info(rs.camera_info.name) == "RGB Camera":
         found_rgb = True
         break
 if not found_rgb:
@@ -50,14 +63,16 @@ align = rs.align(rs.stream.color)
 # Start streaming
 pipeline.start(config)
 
-cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
-cv2.namedWindow('Threshold', cv2.WINDOW_AUTOSIZE)
-cv2.createTrackbar('B min','Threshold',low_thresh[0],255,change_thresh(0, True))
-cv2.createTrackbar('B max','Threshold',high_thresh[0],255,change_thresh(0, False))
-cv2.createTrackbar('G min','Threshold',low_thresh[1],255,change_thresh(1, True))
-cv2.createTrackbar('G max','Threshold',high_thresh[1],255,change_thresh(1, False))
-cv2.createTrackbar('R min','Threshold',low_thresh[2],255,change_thresh(2, True))
-cv2.createTrackbar('R max','Threshold',high_thresh[2],255,change_thresh(2, False))
+cv2.namedWindow("RealSense", cv2.WINDOW_AUTOSIZE)
+cv2.namedWindow("Threshold", cv2.WINDOW_AUTOSIZE)
+cv2.createTrackbar("B min", "Threshold", low_thresh[0], 255, change_thresh(0, True))
+cv2.createTrackbar("B max", "Threshold", high_thresh[0], 255, change_thresh(0, False))
+cv2.createTrackbar("G min", "Threshold", low_thresh[1], 255, change_thresh(1, True))
+cv2.createTrackbar("G max", "Threshold", high_thresh[1], 255, change_thresh(1, False))
+cv2.createTrackbar("R min", "Threshold", low_thresh[2], 255, change_thresh(2, True))
+cv2.createTrackbar("R max", "Threshold", high_thresh[2], 255, change_thresh(2, False))
+
+model = YOLO("yolo26n-seg.pt")
 
 try:
     while True:
@@ -74,24 +89,47 @@ try:
         color_image = np.asanyarray(color_frame.get_data())
 
         # Apply colormap on depth image (image must be converted to 8-bit per pixel first)
-        depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
+        depth_colormap = cv2.applyColorMap(
+            cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET
+        )
 
         depth_colormap_dim = depth_colormap.shape
-        color_colormap_dim = color_image.shape        
-        
+        color_colormap_dim = color_image.shape
+
         cropped_depth_colormap = depth_colormap[100:300, :, :]
+
+        results = model(color_image)
+
+        blended_color_image = np.copy(color_image)
+        for result in results:
+            if result.masks:
+                numpy_result = result.masks.data.numpy()
+                result_size = numpy_result.shape[0]
+
+                for i in range(result_size):
+                    numpy_result[i] = numpy_result[i] * ((255 * i) // result_size)
+                    # cv2.imshow(f"Result {i}", numpy_result[i])
+                    colormap = cv2.applyColorMap(numpy_result[i], cv2.COLORMAP_HOT)
+                    blended_color_image = cv2.addWeighted(
+                        blended_color_image, 1, colormap, 0.7, 0
+                    )
+
         threshold = cv2.inRange(color_image, low_thresh, high_thresh)
 
-        kernel = np.ones((5,5),np.uint8)
+        kernel = np.ones((5, 5), np.uint8)
         erosion = cv2.morphologyEx(threshold, cv2.MORPH_ERODE, kernel)
-        contours, hierarchy = cv2.findContours(erosion, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        contours = sorted(contours, key=lambda contour: cv2.contourArea(contour), reverse=True)
-        cv2.drawContours(color_image, contours, 0, (0,255,0), -1)
-        cv2.drawContours(depth_colormap, contours, 0, (0,255,0), 1)
+        contours, hierarchy = cv2.findContours(
+            erosion, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+        )
+        contours = sorted(
+            contours, key=lambda contour: cv2.contourArea(contour), reverse=True
+        )
+        cv2.drawContours(color_image, contours, 0, (0, 255, 0), -1)
+        cv2.drawContours(depth_colormap, contours, 0, (0, 255, 0), 1)
 
         weights = np.zeros((depth_image.shape[0], depth_image.shape[1], 3), np.uint8)
         if len(contours) > 0 and cv2.contourArea(contours[0]) > 100:
-            cv2.drawContours(weights, contours, 0, (0,255,0), -1)
+            cv2.drawContours(weights, contours, 0, (0, 255, 0), -1)
             weights = weights[:, :, 1]
             filtered = depth_image[weights > 0]
             distance = np.median(filtered)
@@ -99,25 +137,29 @@ try:
 
         # If depth and color resolutions are different, resize color image to match depth image for display
         if depth_colormap_dim != color_colormap_dim:
-            resized_color_image = cv2.resize(color_image, dsize=(depth_colormap_dim[1], depth_colormap_dim[0]), interpolation=cv2.INTER_AREA)
+            resized_color_image = cv2.resize(
+                color_image,
+                dsize=(depth_colormap_dim[1], depth_colormap_dim[0]),
+                interpolation=cv2.INTER_AREA,
+            )
             images = np.hstack((resized_color_image, depth_colormap))
         else:
             images = np.hstack((color_image, depth_colormap))
 
         # Show images
-        cv2.imshow('RealSense', images)
-        cv2.imshow('Threshold', threshold)
-        cv2.imshow('OpenClose', erosion)
-        cv2.imshow('Weights', weights)
+        cv2.imshow("RealSense", images)
+        cv2.imshow("Threshold", threshold)
+        cv2.imshow("OpenClose", erosion)
+        cv2.imshow("Weights", weights)
+        cv2.imshow("Blended", blended_color_image)
         k = cv2.waitKey(1)
-        if k == ord('q'):
+        if k == ord("q"):
             break
-        if k == ord('w'):
+        if k == ord("w"):
             low_thresh[2] += 1
-        if k == ord('s'):
+        if k == ord("s"):
             low_thresh[2] -= 1
 
-        
 
 finally:
 
